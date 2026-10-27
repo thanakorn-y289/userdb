@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#9a2f3f">
+  <title>ฐานข้อมูลผู้ใช้ · โรงเรียนปากช่อง</title>
+  <link rel="icon" type="image/png" href="logo.png">
+  <link rel="apple-touch-icon" href="logo.png">
+  <!-- ปุ่มเข้าสู่ระบบด้วย Google — skill pcschool-google-login (โค้ดชุดเดียวกับ /ask /doc /senddoc) -->
+  <script src="https://accounts.google.com/gsi/client" async onload="window.gReady && window.gReady()"></script>
+  <style>
+    html, body { margin: 0; height: 100%; background: #fcf4f6; overflow: hidden; }
+    #app { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
+    #loader { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+      background: linear-gradient(180deg, #fcf4f6, #fff 55%, #f5f7fa); font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; color: #7b2230; transition: opacity .35s; z-index: 10; }
+    #loader.off { opacity: 0; pointer-events: none; }
+    #loader i { width: 28px; height: 28px; border: 3px solid #e2e8f0; border-top-color: #9a2f3f; border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* ปุ่ม Google วางทับช่อง #gSlot ในการ์ดเข้าสู่ระบบของแอปตามพิกัดที่แอปส่งมา
+       ปุ่มต้องอยู่หน้านี้ เพราะ Google รับปุ่มเฉพาะโดเมนที่ลงทะเบียน (กรอบ Apps Script ลงทะเบียนไม่ได้) */
+    #gfloat { display: none; position: fixed; z-index: 5; align-items: center; justify-content: center; background: #fff; border-radius: 999px; }
+    #gfloat.on { display: flex; }
+    /* ปุ่มสำรองเมื่อปุ่ม Google ไม่ขึ้น (เบราว์เซอร์ในแอป LINE/Facebook) */
+    #gfb { width: 100%; height: 40px; border: 1px solid #dadce0; border-radius: 999px; background: #fff; color: #3c4043;
+      font: 500 14px/1 system-ui, sans-serif; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; }
+    #gfb .gfb-g { font-weight: 700; color: #4285f4; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <div id="loader"><img src="logo.png" alt="" height="64"><i></i>กำลังเปิดฐานข้อมูลผู้ใช้…</div>
+  <!-- ลิงก์ Web app (Deploy → Manage deployments → Web app URL) — เปลี่ยนเมื่อสร้าง deployment ใหม่ (ปกติใช้ Edit → New version จึงไม่ต้องเปลี่ยน) -->
+  <iframe id="app" title="ฐานข้อมูลผู้ใช้" allow="camera; clipboard-write"
+          src="วางลิงก์_DEPLOYMENT_exec_ที่นี่"></iframe>
+  <div id="gfloat" role="region" aria-label="เข้าสู่ระบบด้วย Google"><div id="gbtn"></div><button type="button" id="gfb" style="display:none"></button></div>
+  <script>
+    var link = document.getElementById('app');
+    link.addEventListener('load', function () { document.getElementById('loader').classList.add('off'); });
+    setTimeout(function () { document.getElementById('loader').classList.add('off'); }, 12000);
+
+    /*
+     * ปุ่มเข้าสู่ระบบด้วย Google — คู่กับ GSSO ใน AppSso.html และ googleLogin_ ใน Code.gs
+     *   แอป → หน้านี้ { tes:'auth', state:'login'|'in'|'logout' } / { tes:'gslot', rect } (ช่องในการ์ด, null = ซ่อน)
+     *   หน้านี้ → แอป { tes:'gwrap' } (มีปุ่มจริง แอปจึงเว้นช่อง) / { tes:'gcred', credential, selectBy } (ผลจาก Google)
+     * ส่ง credential กลับไปที่หน้าต่างที่ส่งข้อความมาเท่านั้น (ev.source + ev.origin ของกรอบ Apps Script)
+     */
+    // Client ID ของ Google — ใช้ GitHub/Client ID ของตัวเอง: เปลี่ยนบรรทัดนี้ และตั้ง GOOGLE_CLIENT_ID ใน Script Properties ให้ตรงกัน
+    var GOOGLE_CLIENT_ID = '258938261280-kb26o3gnnqkt434pm2m67toako5jgvu8.apps.googleusercontent.com';
+    var gApp = null, gOrigin = '', gInit = false, gWant = false, gNoAuto = false, gPrompted = false;
+    var gRect = null, gBtnW = 0;
+    var gFloat = document.getElementById('gfloat');
+
+    function gReadyNow() { return !!(window.google && google.accounts && google.accounts.id); }
+    function gInitOnce() {
+      if (gInit || !gReadyNow()) return gInit;
+      gInit = true;
+      google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: gCallback, auto_select: true,
+        hd: 'pcschool.ac.th', context: 'signin', ux_mode: 'popup', use_fedcm_for_prompt: true, cancel_on_tap_outside: false });
+      return true;
+    }
+
+    // เบราว์เซอร์ในแอป (LINE/Facebook/Instagram) Google ไม่วาดปุ่ม → ปุ่ม "เปิดในเบราว์เซอร์"
+    var gInApp = /\bLine\/|FBAN|FBAV|Instagram/i.test(navigator.userAgent);
+    var gFbTimer = 0;
+    function gFallback(kind) {
+      var fb = document.getElementById('gfb'), btn = document.getElementById('gbtn');
+      if (!kind) { fb.style.display = 'none'; btn.style.display = ''; return; }
+      btn.style.display = 'none'; fb.style.display = 'flex';
+      if (kind === 'open') {
+        fb.innerHTML = '<span class="gfb-g">G</span>เปิดในเบราว์เซอร์เพื่อเข้าด้วย Google';
+        fb.onclick = function () { var u = new URL(location.href); u.searchParams.set('openExternalBrowser', '1'); location.href = u.toString(); };
+      } else {
+        fb.innerHTML = '<span class="gfb-g">G</span>ลงชื่อเข้าใช้ด้วย Google';
+        fb.onclick = function () { if (gReadyNow()) google.accounts.id.prompt(); else location.reload(); };
+      }
+    }
+
+    function gPlace() {
+      if (!gWant || !gRect) { gFloat.classList.remove('on'); return; }
+      var fr = link.getBoundingClientRect();
+      gFloat.style.left = (fr.left + gRect.x) + 'px';
+      gFloat.style.top = (fr.top + gRect.y) + 'px';
+      gFloat.style.width = gRect.w + 'px';
+      gFloat.style.height = gRect.h + 'px';
+      gFloat.classList.add('on');
+      if (gInApp) { gFallback('open'); return; }
+      if (!gInitOnce()) {
+        clearTimeout(gFbTimer);
+        gFbTimer = setTimeout(function () { if (gWant && !gInitOnce()) gFallback('prompt'); }, 4000);
+        return;
+      }
+      var w = Math.max(200, Math.min(400, Math.floor(gRect.w)));
+      if (Math.abs(w - gBtnW) > 4) {
+        gBtnW = w;
+        gFallback('');
+        google.accounts.id.renderButton(document.getElementById('gbtn'), { theme: 'outline', size: 'large',
+          text: 'signin_with', shape: 'pill', locale: 'th', width: w });
+        clearTimeout(gFbTimer);
+        gFbTimer = setTimeout(function () {
+          if (gWant && !(document.getElementById('gbtn').getBoundingClientRect().height > 10)) gFallback('prompt');
+        }, 3000);
+      }
+      if (!gNoAuto && !gPrompted) { gPrompted = true; google.accounts.id.prompt(); }
+    }
+    window.gReady = gPlace;
+    window.addEventListener('resize', gPlace);
+    // iPhone: แถบที่อยู่ยุบ/ขยาย หรือหน้าเลื่อน = จอที่มองเห็นเปลี่ยน → วางปุ่มใหม่
+    if (window.visualViewport) { visualViewport.addEventListener('resize', gPlace); visualViewport.addEventListener('scroll', gPlace); }
+    window.addEventListener('scroll', function () { window.scrollTo(0, 0); gPlace(); }, { passive: true });
+
+    function gCallback(resp) {
+      if (!resp || !resp.credential || !gApp) return;
+      gRect = null; gFloat.classList.remove('on');
+      gApp.postMessage({ tes: 'gcred', credential: resp.credential, selectBy: String(resp.select_by || '') }, gOrigin);
+    }
+
+    window.addEventListener('message', function (ev) {
+      var d = ev.data;
+      // แอปขอโหลดใหม่ทั้งหน้า (ลากหน้าจอลงในมือถือ)
+      if (d && d.tes === 'reload' && /\.googleusercontent\.com$/.test(String(ev.origin))) {
+        document.getElementById('loader').classList.remove('off');
+        location.reload();
+        return;
+      }
+      if (!d || (d.tes !== 'auth' && d.tes !== 'gslot') || !/\.googleusercontent\.com$/.test(String(ev.origin))) return;
+      gApp = ev.source; gOrigin = ev.origin;
+      if (d.tes === 'gslot') { gRect = d.rect || null; gPlace(); return; }
+      if (d.state === 'login') {
+        gWant = true;
+        try { gApp.postMessage({ tes: 'gwrap' }, gOrigin); } catch (e) { }
+        gPlace();
+      } else {
+        gWant = false; gRect = null; gPrompted = false; gBtnW = 0;
+        gFloat.classList.remove('on');
+        try { google.accounts.id.cancel(); } catch (e) { }
+        if (d.state === 'logout') { gNoAuto = true; try { google.accounts.id.disableAutoSelect(); } catch (e) { } }
+      }
+    });
+  </script>
+</body>
+</html>
